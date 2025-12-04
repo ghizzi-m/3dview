@@ -3,84 +3,92 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Magic Particles - No React</title>
+    <title>Camera Diagnostic Tool</title>
     <style>
-        body { margin: 0; background: black; overflow: hidden; font-family: monospace; color: #0ff; }
-        canvas { display: block; width: 100vw; height: 100vh; }
-        #info { position: absolute; top: 10px; left: 10px; z-index: 100; background: rgba(0,0,0,0.7); padding: 10px; border: 1px solid #0ff; pointer-events: none; }
-        video { display: none; } /* نخفي الفيديو */
+        body { margin: 0; background: #111; color: white; font-family: sans-serif; overflow: hidden; }
+        #overlay { position: absolute; top: 0; left: 0; padding: 20px; z-index: 10; background: rgba(0,0,0,0.8); width: 100%; }
+        h1 { margin: 0; color: #0ff; font-size: 20px; }
+        .log-item { margin-top: 5px; font-size: 14px; border-bottom: 1px solid #333; padding-bottom: 2px; }
+        .success { color: #0f0; }
+        .error { color: #f55; font-weight: bold; }
+        .warning { color: #fa0; }
+        video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; transform: scaleX(-1); }
+        canvas { position: absolute; top: 0; left: 0; z-index: 2; width: 100%; height: 100%; pointer-events: none; }
     </style>
 </head>
 <body>
 
-    <div id="info">
-        <h3>نظام تتبع اليد</h3>
-        <div id="status">جاري تهيئة النظام...</div>
-        <div id="log" style="color: yellow; font-size: 10px; margin-top:5px;"></div>
+    <div id="overlay">
+        <h1>نظام فحص الكاميرا والجسيمات</h1>
+        <div id="logs"></div>
     </div>
 
-    <video id="webcam" autoplay playsinline></video>
+    <video id="webcam" playsinline autoplay muted></video>
+    <canvas id="output_canvas"></canvas>
 
     <script type="module">
-        import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
         import { FilesetResolver, HandLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/+esm';
 
-        // متغيرات عامة
-        let handLandmarker = undefined;
-        let video = document.getElementById("webcam");
-        let lastVideoTime = -1;
-        let results = undefined;
-        let particlesMesh;
-        
-        const statusDiv = document.getElementById("status");
-        const logDiv = document.getElementById("log");
-
-        function log(msg) {
+        // دالة لعرض الرسائل على الشاشة
+        function log(msg, type = 'normal') {
+            const el = document.getElementById('logs');
+            const div = document.createElement('div');
+            div.className = 'log-item ' + type;
+            div.textContent = `> ${msg}`;
+            el.appendChild(div);
             console.log(msg);
-            logDiv.innerText = msg;
         }
 
-        // 1. إعداد مشهد Three.js
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.z = 5;
+        async function startApp() {
+            // 1. فحص بروتوكول التشغيل
+            if (window.location.protocol === 'file:') {
+                log("خطأ قاتل: لا يمكن تشغيل الكاميرا من الملف مباشرة.", 'error');
+                log("الحل: يجب استخدام Local Server أو رفع الملف على استضافة.", 'warning');
+                alert("تحذير أمني: المتصفح يمنع الكاميرا في وضع الملفات المحلية (file://).");
+                return;
+            } else {
+                log("بيئة التشغيل سليمة (Server/Localhost).", 'success');
+            }
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(renderer.domElement);
+            // 2. فحص دعم المتصفح
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                log("المتصفح لا يدعم الوصول للكاميرا أو السياق غير آمن.", 'error');
+                return;
+            }
 
-        // 2. إنشاء الجزيئات
-        const particleCount = 4000;
-        const posArray = new Float32Array(particleCount * 3);
-        const velocityArray = new Float32Array(particleCount * 3); // لتخزين السرعة
-
-        for(let i = 0; i < particleCount * 3; i++) {
-            posArray[i] = (Math.random() - 0.5) * 10; // انتشار عشوائي
-            velocityArray[i] = 0;
-        }
-
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-
-        const material = new THREE.PointsMaterial({
-            size: 0.04,
-            color: 0x00ffff,
-            transparent: true,
-            opacity: 0.8,
-            blending: THREE.AdditiveBlending
-        });
-
-        particlesMesh = new THREE.Points(geometry, material);
-        scene.add(particlesMesh);
-
-        // 3. تشغيل الذكاء الاصطناعي (MediaPipe)
-        async function createHandLandmarker() {
+            // 3. طلب الكاميرا
+            log("جاري طلب صلاحية الكاميرا...");
             try {
-                log("جاري تحميل موديل الذكاء الاصطناعي...");
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: 640, height: 480 } 
+                });
+                const video = document.getElementById('webcam');
+                video.srcObject = stream;
+                
+                await new Promise((resolve) => {
+                    video.onloadeddata = () => {
+                        log("تم تشغيل الكاميرا بنجاح!", 'success');
+                        video.play();
+                        resolve();
+                    };
+                });
+            } catch (err) {
+                log(`فشل تشغيل الكاميرا: ${err.name}`, 'error');
+                if (err.name === 'NotAllowedError') {
+                    log("السبب: المستخدم رفض الصلاحية. اضغط على أيقونة القفل بجانب الرابط.", 'warning');
+                } else if (err.name === 'NotFoundError') {
+                    log("السبب: لا توجد كاميرا متصلة بالجهاز.", 'warning');
+                }
+                return; // توقف هنا
+            }
+
+            // 4. تحميل الذكاء الاصطناعي
+            log("جاري تحميل موديل تتبع اليد (قد يستغرق وقتاً)...");
+            let handLandmarker;
+            try {
                 const vision = await FilesetResolver.forVisionTasks(
                     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm"
                 );
-                
                 handLandmarker = await HandLandmarker.createFromOptions(vision, {
                     baseOptions: {
                         modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
@@ -89,112 +97,50 @@
                     runningMode: "VIDEO",
                     numHands: 1
                 });
+                log("تم تحميل الموديل بنجاح!", 'success');
+            } catch (err) {
+                log("فشل تحميل الموديل (تأكد من الاتصال بالإنترنت).", 'error');
+                console.error(err);
+                return;
+            }
+
+            // 5. بدء الرسم (حلقة بسيطة بدون Three.js للتأكد أولاً)
+            const canvas = document.getElementById('output_canvas');
+            const ctx = canvas.getContext('2d');
+            const video = document.getElementById('webcam');
+
+            function render() {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
                 
-                statusDiv.innerText = "تم تحميل الموديل! جاري فتح الكاميرا...";
-                startWebcam();
-            } catch (error) {
-                statusDiv.innerText = "فشل تحميل الموديل.";
-                log(error);
+                if (handLandmarker) {
+                    const startTimeMs = performance.now();
+                    const results = handLandmarker.detectForVideo(video, startTimeMs);
+
+                    if (results.landmarks && results.landmarks.length > 0) {
+                        // رسم دائرة خضراء مكان اليد
+                        const hand = results.landmarks[0][9]; // منتصف اليد
+                        const x = (1 - hand.x) * canvas.width;
+                        const y = hand.y * canvas.height;
+
+                        ctx.beginPath();
+                        ctx.arc(x, y, 20, 0, 2 * Math.PI);
+                        ctx.fillStyle = "#00ff00";
+                        ctx.fill();
+                        
+                        // كتابة نص
+                        ctx.font = "20px Arial";
+                        ctx.fillStyle = "white";
+                        ctx.fillText("تم اكتشاف اليد!", x + 30, y);
+                    }
+                }
+                requestAnimationFrame(render);
             }
+            log("بدء التتبع...", 'success');
+            render();
         }
 
-        // 4. تشغيل الكاميرا
-        function startWebcam() {
-            const constraints = { video: { width: 640, height: 480 } };
-            navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
-                video.srcObject = stream;
-                video.addEventListener("loadeddata", () => {
-                    statusDiv.innerText = "النظام يعمل! لوح بيدك.";
-                    log("الكاميرا تعمل.");
-                    animate();
-                });
-            }).catch((err) => {
-                statusDiv.innerText = "فشل الوصول للكاميرا.";
-                log("تأكد من السماح للكاميرا: " + err);
-            });
-        }
-
-        // 5. حلقة التحريك (Animation Loop)
-        function animate() {
-            requestAnimationFrame(animate);
-
-            // كشف اليد
-            if (handLandmarker && video.currentTime !== lastVideoTime) {
-                lastVideoTime = video.currentTime;
-                results = handLandmarker.detectForVideo(video, performance.now());
-            }
-
-            // تحديد موقع الهدف (اليد أو المركز)
-            let targetX = 0, targetY = 0, targetZ = 0;
-            let isHandDetected = false;
-
-            if (results && results.landmarks && results.landmarks.length > 0) {
-                isHandDetected = true;
-                // النقطة 9 هي منتصف اليد
-                const hand = results.landmarks[0][9];
-                
-                // تحويل الإحداثيات لتناسب الشاشة
-                // x في MediaPipe معكوس
-                targetX = (0.5 - hand.x) * 8; 
-                targetY = (0.5 - hand.y) * 5; 
-                targetZ = 0;
-            }
-
-            // تحديث فيزياء الجزيئات
-            const positions = particlesMesh.geometry.attributes.position.array;
-            
-            for (let i = 0; i < particleCount; i++) {
-                const ix = i * 3;
-                const iy = i * 3 + 1;
-                const iz = i * 3 + 2;
-
-                const px = positions[ix];
-                const py = positions[iy];
-                const pz = positions[iz];
-
-                // المسافة نحو الهدف
-                const dx = targetX - px;
-                const dy = targetY - py;
-                const dz = targetZ - pz;
-
-                // قوة الجذب (تزيد إذا وجدت اليد)
-                const force = isHandDetected ? 0.05 : 0.005;
-
-                // تحديث السرعة
-                velocityArray[ix] += dx * force;
-                velocityArray[iy] += dy * force;
-                velocityArray[iz] += dz * force;
-
-                // الاحتكاك (لتهدئة الحركة)
-                velocityArray[ix] *= 0.92;
-                velocityArray[iy] *= 0.92;
-                velocityArray[iz] *= 0.92;
-
-                // تطبيق الحركة
-                positions[ix] += velocityArray[ix];
-                positions[iy] += velocityArray[iy];
-                positions[iz] += velocityArray[iz];
-            }
-
-            particlesMesh.geometry.attributes.position.needsUpdate = true;
-            
-            // تدوير المشهد ببطء
-            if (!isHandDetected) {
-                particlesMesh.rotation.y += 0.002;
-            }
-
-            renderer.render(scene, camera);
-        }
-
-        // التعامل مع تغيير حجم النافذة
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        // البدء
-        createHandLandmarker();
+        startApp();
     </script>
 </body>
 </html>
